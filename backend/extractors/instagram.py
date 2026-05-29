@@ -1,6 +1,7 @@
 import os
 import httpx
 from pydantic import BaseModel
+from extractors.transcriber import transcribe_from_url
 
 
 class VideoData(BaseModel):
@@ -86,12 +87,21 @@ def fetch_video_data(url: str) -> VideoData:
     # hashtags — parse from caption
     hashtags = [word for word in title.split() if word.startswith("#")]
 
+    # transcript via Groq Whisper
+    transcript = ""
+    video_url = item.get("video_url")
+    if video_url:
+        try:
+            transcript = transcribe_from_url(video_url)
+        except Exception as e:
+            print(f"[instagram] transcription failed: {e}")
+
     return VideoData(
         video_id=video_id,
         url=url,
         title=title,
         creator=creator,
-        transcript="",
+        transcript=transcript,
         views=views,
         likes=likes,
         comments=comments,
