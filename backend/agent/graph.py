@@ -52,7 +52,9 @@ OPENING_KEYWORDS = {
 COMPARISON_KEYWORDS = {
     "improve", "improvement", "improvements", "based on",
     "worked", "suggest", "better", "compare", "comparison",
-    "versus", "vs", "difference", "differences"
+    "versus", "vs", "difference", "differences",
+    "why", "reason", "more engagement", "than", "outperform",
+    "performed", "performance", "did well", "more views", "more likes",
 }
 
 def _is_opening_query(query: str) -> bool:
@@ -62,6 +64,44 @@ def _is_opening_query(query: str) -> bool:
 def _is_comparison_query(query: str) -> bool:
     q = query.lower()
     return any(k in q for k in COMPARISON_KEYWORDS)
+
+
+def build_system_prompt(metadata_block: str, context_block: str) -> str:
+    return f"""You are WiseAI — a video performance analyst for content creators. You have metadata and transcript excerpts for two videos: Video A and Video B. Creators rely on you for sharp, specific, actionable insight — not generic observations.
+
+## Video Metadata
+{metadata_block}
+
+## Transcript Excerpts (Retrieved, with timestamps)
+{context_block}
+
+## How to answer
+- When asked WHY one video outperformed another, give the REAL reason from the transcript content — analyze the hook (first few seconds), the topic, the pacing, the delivery, the specificity of the message. Then connect it to the engagement numbers. Don't just restate that "it had a higher engagement rate" — that's circular and useless to a creator.
+- Quote or paraphrase actual lines from the transcript to support every claim. Example: "Video B opens with a bold claim — '{{quote}}' [Video B, chunk 0 @ 0:00] — which hooks viewers instantly, while Video A eases in with setup [Video A, chunk 0]."
+- Use the metadata (views, likes, comments, engagement_rate, subscribers) as supporting evidence, not as the whole answer.
+- For improvement requests, point to specific things the better-performing video did and how the other could apply them.
+- Be specific and confident. A creator should walk away knowing exactly what to do differently.
+
+## Rules
+- Cite inline: [Video A, chunk N] for transcript, [Video A, metadata] for stats. Only cite what you actually used.
+- If a video's transcript wasn't retrieved, say so briefly, then answer from what you have.
+- Length: 4-8 sentences for "why"/comparison/improvement questions. Be concise for simple factual questions.
+- No filler, no hedging, no generic advice that could apply to any video.
+"""
+
+
+def _payload_to_chunk(payload: dict, score: float) -> dict:
+    return {
+        "video_id": payload.get("video_id", ""),
+        "chunk_index": payload.get("chunk_index", 0),
+        "start_time_seconds": payload.get("start_time_seconds"),
+        "is_opening": payload.get("is_opening", False),
+        "text": payload.get("text", ""),
+        "score": score,
+        "creator": payload.get("creator", ""),
+        "url": payload.get("url", ""),
+        "engagement_rate": payload.get("engagement_rate", 0.0),
+    }
 
 
 def _fetch_opening_chunks(client: QdrantClient, collection: str) -> list[dict]:
@@ -108,62 +148,52 @@ def retrieve(state: AgentState) -> dict:
 
     query_vector = _embed_query(last_message)
 
-    # For comparison/improvement questions, force-fetch from both videos
+    # For comparison / "why" questions, force-fetch from BOTH videos:
+    # semantic matches + opening hooks, so the LLM can reason about content.
     if _is_comparison_query(last_message):
         chunks = []
+        seen = set()
+
+        def _add(payload, score):
+            key = (payload.get("video_id"), payload.get("chunk_index"))
+            if key in seen:
+                return
+            seen.add(key)
+            chunks.append(_payload_to_chunk(payload, score))
+
         for label in ["A", "B"]:
-            # First try semantic search filtered by label
+            label_filter = Filter(
+                must=[FieldCondition(key="video_id", match=MatchValue(value=label))]
+            )
+
+            # Semantic matches for this video
             results = client.query_points(
                 collection_name=collection,
                 query=query_vector,
                 limit=3,
                 with_payload=True,
                 score_threshold=0.0,
-                query_filter=Filter(
-                    must=[FieldCondition(key="video_id", match=MatchValue(value=label))]
-                ),
+                query_filter=label_filter,
             ).points
+            for r in results:
+                _add(r.payload, round(r.score, 4))
 
-            # If no results, scroll to get any chunks from this video
-            if not results:
-                scroll_results = client.scroll(
-                    collection_name=collection,
-                    scroll_filter=Filter(
-                        must=[FieldCondition(key="video_id", match=MatchValue(value=label))]
-                    ),
-                    limit=3,
-                    with_payload=True,
-                    with_vectors=False,
-                )[0]
-                chunks += [
-                    {
-                        "video_id": r.payload.get("video_id", ""),
-                        "chunk_index": r.payload.get("chunk_index", 0),
-                        "start_time_seconds": r.payload.get("start_time_seconds"),
-                        "is_opening": r.payload.get("is_opening", False),
-                        "text": r.payload.get("text", ""),
-                        "score": 0.0,
-                        "creator": r.payload.get("creator", ""),
-                        "url": r.payload.get("url", ""),
-                        "engagement_rate": r.payload.get("engagement_rate", 0.0),
-                    }
-                    for r in scroll_results
-                ]
-            else:
-                chunks += [
-                    {
-                        "video_id": r.payload.get("video_id", ""),
-                        "chunk_index": r.payload.get("chunk_index", 0),
-                        "start_time_seconds": r.payload.get("start_time_seconds"),
-                        "is_opening": r.payload.get("is_opening", False),
-                        "text": r.payload.get("text", ""),
-                        "score": round(r.score, 4),
-                        "creator": r.payload.get("creator", ""),
-                        "url": r.payload.get("url", ""),
-                        "engagement_rate": r.payload.get("engagement_rate", 0.0),
-                    }
-                    for r in results
-                ]
+            # Opening hooks for this video (so "why" answers can cite the hook)
+            opening = client.scroll(
+                collection_name=collection,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(key="video_id", match=MatchValue(value=label)),
+                        FieldCondition(key="is_opening", match=MatchValue(value=True)),
+                    ]
+                ),
+                limit=3,
+                with_payload=True,
+                with_vectors=False,
+            )[0]
+            for r in opening:
+                _add(r.payload, 0.9)
+
         return {"retrieved_chunks": chunks}
 
     results = client.query_points(
@@ -174,20 +204,7 @@ def retrieve(state: AgentState) -> dict:
         score_threshold=0.1,
     ).points
 
-    chunks = [
-        {
-            "video_id": r.payload.get("video_id", ""),
-            "chunk_index": r.payload.get("chunk_index", 0),
-            "start_time_seconds": r.payload.get("start_time_seconds"),
-            "is_opening": r.payload.get("is_opening", False),
-            "text": r.payload.get("text", ""),
-            "score": round(r.score, 4),
-            "creator": r.payload.get("creator", ""),
-            "url": r.payload.get("url", ""),
-            "engagement_rate": r.payload.get("engagement_rate", 0.0),
-        }
-        for r in results
-    ]
+    chunks = [_payload_to_chunk(r.payload, round(r.score, 4)) for r in results]
 
     return {"retrieved_chunks": chunks}
 
@@ -229,23 +246,7 @@ def generate(state: AgentState) -> dict:
             )
     metadata_block = "\n".join(meta_lines) if meta_lines else "No metadata available."
 
-    system_prompt = f"""You are a sharp video analytics assistant. You have access to metadata and transcript excerpts for two videos: Video A and Video B.
-
-## Video Metadata
-{metadata_block}
-
-## Transcript Excerpts (Retrieved)
-{context_block}
-
-## Rules — follow strictly
-1. Be concise. 3-5 sentences max unless the question genuinely requires more.
-2. For engagement questions (why more engagement, engagement rate, performance), ALWAYS answer using the metadata stats above — you have views, likes, comments, engagement_rate for both videos. Analyze and compare them directly.
-3. For content questions (hooks, improvements, what was said), use the transcript excerpts. If no excerpts available for a video, say so but still answer from what you do have.
-4. If asked for improvements, compare what's in Video A transcripts vs Video B transcripts. Use metadata differences (engagement rate, views) as supporting evidence.
-5. Cite inline as [Video A, chunk N] or [Video B, metadata]. Do not cite things you didn't use.
-6. No filler, no padding. Every sentence must add value.
-7. Never say "I don't have that data" for engagement/metadata questions — that data is always in the metadata block above.
-"""
+    system_prompt = build_system_prompt(metadata_block, context_block)
 
     client = Groq(api_key=os.environ["GROQ_API_KEY"])
 

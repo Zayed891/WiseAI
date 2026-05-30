@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from extractors.youtube import fetch_video_data as fetch_youtube
 from extractors.instagram import fetch_video_data as fetch_instagram
 from pipeline.ingest import ingest, compute_engagement
-from agent.graph import graph
+from agent.graph import graph, build_system_prompt
 
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -194,23 +194,7 @@ async def chat_stream(req: ChatRequest):
                 )
         metadata_block = "\n".join(meta_lines) if meta_lines else "No metadata available."
 
-        system_prompt = f"""You are a sharp video analytics assistant. You have access to metadata and transcript excerpts for two videos: Video A and Video B.
-
-## Video Metadata
-{metadata_block}
-
-## Transcript Excerpts (Retrieved)
-{context_block}
-
-## Rules — follow strictly
-1. Be concise. 3-5 sentences max unless the question genuinely requires more.
-2. For engagement questions (why more engagement, engagement rate, performance), ALWAYS answer using the metadata stats above — you have views, likes, comments, engagement_rate for both videos. Analyze and compare them directly.
-3. For content questions (hooks, improvements, what was said), use the transcript excerpts. If no excerpts available for a video, say so but still answer from what you do have.
-4. If asked for improvements, compare what's in Video A transcripts vs Video B transcripts. Use metadata differences (engagement rate, views) as supporting evidence.
-5. Cite inline as [Video A, chunk N] or [Video B, metadata]. Do not cite things you didn't use.
-6. No filler, no padding. Every sentence must add value.
-7. Never say "I don't have that data" for engagement/metadata questions — that data is always in the metadata block above.
-"""
+        system_prompt = build_system_prompt(metadata_block, context_block)
 
         groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
