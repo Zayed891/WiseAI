@@ -27,7 +27,7 @@ app = FastAPI(title="WiseAI", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://localhost:3001"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -64,6 +64,8 @@ def _build_metadata(video, engagement_rate: float, note: str) -> dict:
         "engagement_rate": engagement_rate,
         "engagement_note": note,
         "likes_hidden": getattr(video, "likes_hidden", False),
+        "follower_count": getattr(video, "follower_count", 0),
+        "thumbnail_url": getattr(video, "thumbnail_url", ""),
     }
 
 
@@ -168,7 +170,14 @@ async def chat_stream(req: ChatRequest):
         context_lines = []
         for c in chunks:
             label = f"Video {c['video_id']}, chunk {c['chunk_index']}"
-            context_lines.append(f"[{label}]\n{c['text']}")
+            time_info = ""
+            if c.get("start_time_seconds") is not None:
+                t = c["start_time_seconds"]
+                m, s = divmod(int(t), 60)
+                time_info = f" @ {m}:{s:02d}"
+                if c.get("is_opening"):
+                    time_info += " [opening]"
+            context_lines.append(f"[{label}{time_info}]\n{c['text']}")
 
         context_block = "\n\n".join(context_lines) if context_lines else "No relevant chunks found."
 
@@ -180,25 +189,27 @@ async def chat_stream(req: ChatRequest):
                     f"views={stats.get('views', 0)}, likes={stats.get('likes', 0)}, "
                     f"comments={stats.get('comments', 0)}, "
                     f"engagement_rate={stats.get('engagement_rate', 0)}%, "
+                    f"follower_count={stats.get('follower_count', 'N/A')}, "
                     f"url={stats.get('url', 'N/A')}"
                 )
         metadata_block = "\n".join(meta_lines) if meta_lines else "No metadata available."
 
-        system_prompt = f"""You are a video analytics assistant with deep knowledge of two videos: Video A and Video B.
-
-Your job is to answer questions about these videos — their content, performance, engagement, and comparisons.
+        system_prompt = f"""You are a sharp video analytics assistant. You have access to metadata and transcript excerpts for two videos: Video A and Video B.
 
 ## Video Metadata
 {metadata_block}
 
-## Retrieved Context
+## Transcript Excerpts (Retrieved)
 {context_block}
 
-## Instructions
-- Always cite your sources inline using the format [Video A, chunk 2] or [Video B, chunk 0]
-- When comparing videos, reference both metadata stats and transcript content
-- If information is not available in the context, say so clearly
-- Be concise, insightful, and data-driven
+## Rules — follow strictly
+1. Be concise. 3-5 sentences max unless the question genuinely requires more.
+2. For engagement questions (why more engagement, engagement rate, performance), ALWAYS answer using the metadata stats above — you have views, likes, comments, engagement_rate for both videos. Analyze and compare them directly.
+3. For content questions (hooks, improvements, what was said), use the transcript excerpts. If no excerpts available for a video, say so but still answer from what you do have.
+4. If asked for improvements, compare what's in Video A transcripts vs Video B transcripts. Use metadata differences (engagement rate, views) as supporting evidence.
+5. Cite inline as [Video A, chunk N] or [Video B, metadata]. Do not cite things you didn't use.
+6. No filler, no padding. Every sentence must add value.
+7. Never say "I don't have that data" for engagement/metadata questions — that data is always in the metadata block above.
 """
 
         groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])

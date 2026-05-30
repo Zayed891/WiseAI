@@ -1,8 +1,9 @@
 import os
 import asyncio
+import hashlib
 import cohere
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct, VectorParams, Distance
+from qdrant_client.models import PointStruct, VectorParams, Distance, Filter, FieldCondition, MatchValue, PayloadSchemaType
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from extractors.youtube import VideoData
 
@@ -39,6 +40,44 @@ def chunk_transcript(transcript: str) -> list[str]:
     return splitter.split_text(transcript) if transcript.strip() else []
 
 
+def estimate_chunk_start_times(
+    chunks: list[str],
+    transcript: str,
+    duration_seconds: int,
+    segments: list[dict],
+) -> list[float]:
+    """
+    For each chunk, estimate the start time in seconds.
+    Uses real segment timestamps if available (YouTube), otherwise
+    estimates proportionally based on character position.
+    """
+    start_times = []
+    total_chars = len(transcript)
+
+    for chunk in chunks:
+        pos = transcript.find(chunk[:80])  # match on first 80 chars
+        if pos == -1:
+            pos = 0
+
+        if segments:
+            # Find the segment whose cumulative char position is closest
+            cumulative = 0
+            best_start = 0.0
+            for seg in segments:
+                seg_len = len(seg["text"])
+                if cumulative + seg_len >= pos:
+                    best_start = seg["start"]
+                    break
+                cumulative += seg_len + 1  # +1 for space
+            start_times.append(round(best_start, 1))
+        else:
+            # Proportional estimate
+            ratio = pos / max(total_chars, 1)
+            start_times.append(round(ratio * duration_seconds, 1))
+
+    return start_times
+
+
 # ── Embedding ──────────────────────────────────────────────────────────────────
 
 def embed_chunks(chunks: list[str]) -> list[list[float]]:
@@ -69,6 +108,19 @@ def ensure_collection(client: QdrantClient, collection: str, vector_size: int):
             collection_name=collection,
             vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
         )
+    # Ensure payload indexes for filtered queries
+    for field, schema in [
+        ("video_id", PayloadSchemaType.KEYWORD),
+        ("is_opening", PayloadSchemaType.BOOL),
+    ]:
+        try:
+            client.create_payload_index(
+                collection_name=collection,
+                field_name=field,
+                field_schema=schema,
+            )
+        except Exception:
+            pass  # Index already exists
 
 
 def store_chunks(
@@ -79,10 +131,23 @@ def store_chunks(
     video: VideoData,
     label: str,  # "A" or "B"
     engagement_rate: float,
+    start_times: list[float] | None = None,
 ):
+    # Delete all existing chunks for this label (A or B) before upserting
+    client.delete(
+        collection_name=collection,
+        points_selector=Filter(
+            must=[FieldCondition(key="video_id", match=MatchValue(value=label))]
+        ),
+    )
+
+    def deterministic_id(video_id: str, index: int) -> int:
+        key = f"{video_id}_{index}".encode()
+        return int(hashlib.md5(key).hexdigest(), 16) % (2**63)
+
     points = [
         PointStruct(
-            id=abs(hash(f"{video.video_id}_{i}")) % (2**63),
+            id=deterministic_id(video.video_id, i),
             vector=embeddings[i],
             payload={
                 "video_id": label,
@@ -91,6 +156,8 @@ def store_chunks(
                 "url": video.url,
                 "engagement_rate": engagement_rate,
                 "chunk_index": i,
+                "start_time_seconds": start_times[i] if start_times else None,
+                "is_opening": i <= 2,
                 "text": chunks[i],
             },
         )
@@ -118,10 +185,13 @@ async def process_video(video: VideoData, label: str):
     embeddings = await asyncio.to_thread(embed_chunks, chunks)
     print(f"[{label}] {len(embeddings)} embeddings generated")
 
+    segments = getattr(video, "transcript_segments", [])
+    start_times = estimate_chunk_start_times(chunks, video.transcript, video.duration_seconds, segments)
+
     client = get_qdrant_client()
     vector_size = len(embeddings[0])
     ensure_collection(client, collection, vector_size)
-    store_chunks(client, collection, chunks, embeddings, video, label, engagement_rate)
+    store_chunks(client, collection, chunks, embeddings, video, label, engagement_rate, start_times)
     print(f"[{label}] stored in Qdrant collection '{collection}'")
 
     return {"label": label, "engagement_rate": engagement_rate, "note": note, "chunks": len(chunks)}

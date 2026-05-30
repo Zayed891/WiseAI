@@ -1,660 +1,425 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import Link from "next/link";
+import { motion, type Variants, useMotionValue, useTransform, useSpring } from "framer-motion";
 import {
-  Bot,
-  Send,
-  Play,
-  Camera,
-  Eye,
-  Heart,
-  MessageCircle,
-  Clock,
-  Calendar,
-  Zap,
+  Zap, BarChart2, MessageSquare, Bot, Search, TrendingUp,
 } from "lucide-react";
+import { FaYoutube, FaInstagram } from "react-icons/fa";
 
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
-import { Skeleton } from "@/components/ui/skeleton";
+// ── Animation helpers ──────────────────────────────────────────────────────────
 
-// ── Types ──────────────────────────────────────────────────────────────────────
+const fadeUp: Variants = {
+  hidden: { opacity: 0, y: 32 },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.6, ease: [0.22, 1, 0.36, 1] } },
+};
 
-interface VideoMeta {
-  video_id: string;
-  url: string;
-  title: string;
-  creator: string;
-  views: number;
-  likes: number;
-  comments: number;
-  hashtags: string[];
-  upload_date: string;
-  duration_seconds: number;
-  engagement_rate: number;
-  engagement_note: string;
-  likes_hidden: boolean;
-}
+const stagger: Variants = {
+  hidden: {},
+  visible: { transition: { staggerChildren: 0.1 } },
+};
 
-interface Citation {
-  video_id: string;
-  chunk_index: number;
-  score: number;
-  creator: string;
-  url: string;
-}
-
-interface Message {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  citations?: Citation[];
-  streaming?: boolean;
-}
-
-// ── Helpers ────────────────────────────────────────────────────────────────────
-
-function formatNumber(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
-  return n.toString();
-}
-
-function formatDuration(s: number): string {
-  const m = Math.floor(s / 60);
-  const sec = s % 60;
-  return `${m}:${sec.toString().padStart(2, "0")}`;
-}
-
-function formatDate(raw: string): string {
-  if (!raw) return "Unknown";
-  if (/^\d{10,}$/.test(raw)) {
-    return new Date(parseInt(raw) * 1000).toLocaleDateString("en-US", {
-      year: "numeric", month: "short", day: "numeric",
-    });
-  }
-  if (/^\d{8}$/.test(raw)) {
-    return new Date(
-      `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`
-    ).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
-  }
-  return raw;
-}
-
-function EngagementBadge({ rate }: { rate: number }) {
-  if (rate > 3)
-    return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-100 text-green-700 text-xs font-medium">
-        🔥 {rate.toFixed(2)}% Engagement
-      </span>
-    );
-  if (rate >= 1)
-    return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700 text-xs font-medium">
-        📊 {rate.toFixed(2)}% Engagement
-      </span>
-    );
+function FadeIn({ children, delay = 0, className = "" }: { children: React.ReactNode; delay?: number; className?: string }) {
   return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs font-medium">
-      📉 {rate.toFixed(2)}% Engagement
-    </span>
+    <motion.div
+      initial="hidden"
+      whileInView="visible"
+      viewport={{ once: true, margin: "-60px" }}
+      variants={{ hidden: { opacity: 0, y: 28 }, visible: { opacity: 1, y: 0, transition: { duration: 0.6, ease: [0.22, 1, 0.36, 1], delay } } }}
+      className={className}
+    >
+      {children}
+    </motion.div>
   );
 }
+
+// ── Orbit icons data ───────────────────────────────────────────────────────────
+
+const ORBIT_ICONS = [
+  { Icon: FaYoutube,    color: "#ef4444", bg: "#fef2f2", angle: 0,   label: "YouTube"    },
+  { Icon: FaInstagram,  color: "#a855f7", bg: "#faf5ff", angle: 45,  label: "Instagram"  },
+  { Icon: BarChart2,    color: "#6366f1", bg: "#eef2ff", angle: 90,  label: "Analytics"  },
+  { Icon: MessageSquare,color: "#0ea5e9", bg: "#f0f9ff", angle: 135, label: "Chat"       },
+  { Icon: Bot,          color: "#10b981", bg: "#f0fdf4", angle: 180, label: "AI"         },
+  { Icon: Search,       color: "#f59e0b", bg: "#fffbeb", angle: 225, label: "Search"     },
+  { Icon: TrendingUp,   color: "#ec4899", bg: "#fdf2f8", angle: 270, label: "Growth"     },
+  { Icon: Zap,          color: "#8b5cf6", bg: "#f5f3ff", angle: 315, label: "Speed"      },
+];
 
 // ── Navbar ─────────────────────────────────────────────────────────────────────
 
 function Navbar() {
   return (
-    <nav
-      className="sticky top-0 z-50 w-full bg-white px-6 py-3 flex items-center justify-between"
-      style={{ borderBottom: "1px solid #e2e8f0" }}
-    >
-      <div className="flex items-center gap-3">
-        <span className="text-lg font-bold text-slate-900 flex items-center gap-1">
-          <Zap size={18} className="text-indigo-500" fill="#6366f1" />
-          WiseAI
-        </span>
-        <span className="text-xs text-slate-400 font-medium hidden sm:block">
-          AI Video Intelligence
-        </span>
+    <nav className="sticky top-0 z-50 w-full bg-white/95 backdrop-blur-sm px-6 lg:px-16 py-4 flex items-center justify-between" style={{ borderBottom: "1px solid #e2e8f0" }}>
+      <Link href="/" className="flex items-center gap-2">
+        <Zap size={18} fill="#0f172a" className="text-slate-900" />
+        <span className="text-lg font-bold text-slate-900" style={{ fontFamily: "var(--font-syne)" }}>WiseAI</span>
+      </Link>
+
+      <div className="hidden md:flex items-center gap-8">
+        {["Features", "How it Works", "Pricing"].map((item) => (
+          <a key={item} href={`#${item.toLowerCase().replace(/ /g, "-")}`}
+            className="text-sm text-slate-500 hover:text-slate-900 transition-colors font-medium">
+            {item}
+          </a>
+        ))}
       </div>
-      <Badge
-        className="text-xs font-medium px-3 py-1"
-        style={{ background: "#6366f1", color: "white", border: "none" }}
-      >
-        RAG Powered
-      </Badge>
+
+      <Link href="/app"
+        className="text-sm font-semibold text-white px-5 py-2 rounded-full hover:opacity-90 transition-opacity"
+        style={{ background: "#0f172a" }}>
+        Get Started →
+      </Link>
     </nav>
   );
 }
 
-// ── URL Input Screen ───────────────────────────────────────────────────────────
+// ── Hero ───────────────────────────────────────────────────────────────────────
 
-const LOADING_STEPS = [
-  "Extracting transcripts...",
-  "Embedding chunks...",
-  "Ready to chat",
-];
-
-function InputScreen({ onIngest }: { onIngest: (a: string, b: string) => void }) {
-  const [urlA, setUrlA] = useState("");
-  const [urlB, setUrlB] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [stepIndex, setStepIndex] = useState(0);
-  const [error, setError] = useState("");
-
-  const handleSubmit = async () => {
-    if (!urlA.trim() || !urlB.trim()) {
-      setError("Please enter both URLs.");
-      return;
-    }
-    setError("");
-    setLoading(true);
-    setStepIndex(0);
-
-    const stepTimer = setInterval(() => {
-      setStepIndex((prev) => Math.min(prev + 1, LOADING_STEPS.length - 1));
-    }, 3000);
-
-    try {
-      await onIngest(urlA.trim(), urlB.trim());
-    } finally {
-      clearInterval(stepTimer);
-      setLoading(false);
-    }
-  };
+function OrbitRing() {
+  const RADIUS = 220;
 
   return (
-    <div className="flex-1 flex items-center justify-center px-4 py-12">
+    <div className="flex items-center justify-center mx-auto">
+    <div className="relative w-[520px] h-[520px] flex items-center justify-center scale-[0.55] sm:scale-[0.75] lg:scale-100 origin-center">
+      {/* Orbit ring */}
+      <div className="absolute inset-0 rounded-full border border-dashed border-slate-200" />
+      <div className="absolute" style={{ inset: "60px", borderRadius: "50%", border: "1px dashed #e2e8f0" }} />
+
+      {/* Rotating container */}
       <motion.div
-        initial={{ opacity: 0, y: 24 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5, ease: "easeOut" }}
-        className="w-full max-w-lg"
+        className="absolute inset-0"
+        animate={{ rotate: 360 }}
+        transition={{ duration: 30, repeat: Infinity, ease: "linear" }}
       >
-        <Card className="shadow-lg rounded-2xl border border-slate-200">
-          <CardContent className="p-8 flex flex-col gap-6">
-            <div className="text-center">
-              <h1 className="text-2xl font-bold text-slate-900">Compare Your Videos</h1>
-              <p className="text-sm text-slate-500 mt-1">
-                Paste a YouTube and Camera Reel URL to get AI‑powered insights
-              </p>
-            </div>
+        {ORBIT_ICONS.map(({ Icon, color, bg, angle, label }) => {
+          const rad = (angle * Math.PI) / 180;
+          const x = 260 + RADIUS * Math.cos(rad) - 22;
+          const y = 260 + RADIUS * Math.sin(rad) - 22;
+          return (
+            <motion.div
+              key={label}
+              className="absolute w-11 h-11 rounded-full flex items-center justify-center shadow-md border border-white/80"
+              style={{ left: x, top: y, background: bg }}
+              animate={{ rotate: -360 }}
+              transition={{ duration: 30, repeat: Infinity, ease: "linear" }}
+              title={label}
+            >
+              <Icon size={18} style={{ color }} />
+            </motion.div>
+          );
+        })}
+      </motion.div>
 
-            <div className="flex flex-col gap-3">
-              <div className="relative">
-                <Play size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-red-500" />
-                <Input
-                  className="pl-9 rounded-xl border-slate-200 focus-visible:ring-indigo-400"
-                  placeholder="YouTube URL — Video A"
-                  value={urlA}
-                  onChange={(e) => setUrlA(e.target.value)}
-                  disabled={loading}
-                />
+      {/* Center content */}
+      <div className="relative z-10 flex flex-col items-center text-center px-8">
+        <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4 shadow-lg"
+          style={{ background: "#0f172a" }}>
+          <Zap size={28} fill="white" className="text-white" />
+        </div>
+        <div className="text-xs font-semibold text-slate-700 bg-slate-100 px-3 py-1 rounded-full mb-2">RAG-Powered</div>
+        <div className="text-sm font-bold text-slate-800" style={{ fontFamily: "var(--font-syne)" }}>WiseAI</div>
+        <div className="text-xs text-slate-400 mt-0.5">Video Intelligence</div>
+      </div>
+    </div>
+    </div>
+  );
+}
+
+function Hero() {
+  return (
+    <section className="relative overflow-hidden px-6 lg:px-16 min-h-[calc(100vh-64px)] flex flex-col justify-center py-12">
+      {/* Subtle grid */}
+      <div className="absolute inset-0 pointer-events-none" style={{
+        backgroundImage: "linear-gradient(to right, #e2e8f018 1px, transparent 1px), linear-gradient(to bottom, #e2e8f018 1px, transparent 1px)",
+        backgroundSize: "48px 48px",
+      }} />
+      {/* Glow */}
+      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[400px] pointer-events-none"
+        style={{ background: "radial-gradient(ellipse at center, #0f172208 0%, transparent 70%)" }} />
+
+      <div className="relative max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-12 items-center">
+        {/* Left: Text */}
+        <motion.div initial="hidden" animate="visible" variants={stagger} className="flex flex-col gap-6">
+          {/* Trust badges */}
+          <motion.div variants={fadeUp} className="flex items-center gap-3">
+            <span className="text-xs text-slate-500 flex items-center gap-1.5">
+              <span className="text-yellow-400">★★★★★</span> 4.9 Product Hunt
+            </span>
+            <span className="w-px h-4 bg-slate-200" />
+            <span className="text-xs text-slate-500 flex items-center gap-1.5">
+              <span className="text-blue-400">◆</span> Featured on PH
+            </span>
+          </motion.div>
+
+          <motion.h1 variants={fadeUp}
+            className="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-slate-900 leading-[1.08] tracking-tight"
+            style={{ fontFamily: "var(--font-syne)" }}>
+            AI-Powered<br />
+            Video <span className="text-slate-500">Intelligence.</span>
+          </motion.h1>
+
+          <motion.p variants={fadeUp} className="text-lg text-slate-500 leading-relaxed max-w-md">
+            Paste a YouTube or Instagram Reel URL. WiseAI extracts transcripts, computes engagement,
+            and lets you chat with your video content using AI.
+          </motion.p>
+
+          <motion.div variants={fadeUp} className="flex items-center gap-3 flex-wrap">
+            <Link href="/app"
+              className="px-7 py-3.5 rounded-full text-sm font-semibold text-white hover:opacity-90 transition-all hover:scale-105 shadow-lg"
+              style={{ background: "#0f172a", boxShadow: "0 8px 30px rgba(0,0,0,0.15)" }}>
+              Analyze Your First Video →
+            </Link>
+            <a href="#how-it-works"
+              className="px-7 py-3.5 rounded-full text-sm font-semibold text-slate-700 bg-white border border-slate-200 hover:border-slate-400 transition-colors">
+              See How It Works
+            </a>
+          </motion.div>
+
+          <motion.p variants={fadeUp} className="text-xs text-slate-400">
+            No signup required · Free to try
+          </motion.p>
+
+          {/* Mini stats */}
+          <motion.div variants={fadeUp} className="flex items-center gap-6 pt-2">
+            {[["107", "chunks/video"], ["< 30s", "analysis time"], ["6.3%", "avg engagement"]].map(([val, label]) => (
+              <div key={label}>
+                <div className="text-xl font-bold text-slate-900" style={{ fontFamily: "var(--font-syne)" }}>{val}</div>
+                <div className="text-xs text-slate-400">{label}</div>
               </div>
+            ))}
+          </motion.div>
+        </motion.div>
 
-              <div className="relative">
-                <Camera
-                  size={16}
-                  className="absolute left-3 top-1/2 -translate-y-1/2"
-                  style={{ color: "#a855f7" }}
-                />
-                <Input
-                  className="pl-9 rounded-xl border-slate-200 focus-visible:ring-indigo-400"
-                  placeholder="Camera Reel URL — Video B"
-                  value={urlB}
-                  onChange={(e) => setUrlB(e.target.value)}
-                  disabled={loading}
-                />
-              </div>
-            </div>
+        {/* Right: Orbit — hide on small screens to avoid overflow */}
+        <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
+          className="flex justify-center">
+          <OrbitRing />
+        </motion.div>
+      </div>
 
-            {error && <p className="text-xs text-red-500 text-center">{error}</p>}
-
-            <AnimatePresence mode="wait">
-              {loading ? (
-                <motion.div
-                  key="loading"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  className="flex flex-col gap-2"
-                >
-                  <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                    <motion.div
-                      className="h-full rounded-full"
-                      style={{ background: "#6366f1" }}
-                      initial={{ width: "5%" }}
-                      animate={{ width: `${((stepIndex + 1) / LOADING_STEPS.length) * 100}%` }}
-                      transition={{ duration: 0.6, ease: "easeInOut" }}
-                    />
+      {/* App mockup below */}
+      <motion.div initial={{ opacity: 0, y: 40 }} animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.8, delay: 0.4, ease: [0.22, 1, 0.36, 1] }}
+        className="relative max-w-3xl mx-auto mt-12 hidden sm:block">
+        <div className="rounded-2xl border border-slate-200 shadow-2xl overflow-hidden"
+          style={{ background: "linear-gradient(135deg, #f0f1ff 0%, #fafafa 60%)" }}>
+          <div className="px-5 py-3 flex items-center gap-2 border-b border-slate-200 bg-white/80">
+            <div className="flex gap-1.5"><div className="w-3 h-3 rounded-full bg-red-300"/><div className="w-3 h-3 rounded-full bg-yellow-300"/><div className="w-3 h-3 rounded-full bg-green-300"/></div>
+            <div className="flex-1 h-5 rounded bg-slate-100 flex items-center px-3"><span className="text-xs text-slate-400">localhost:3001/app</span></div>
+          </div>
+          <div className="p-5">
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              {[{label:"A",tag:"YouTube",tc:"#ef4444"},{label:"B",tag:"Instagram",tc:"#ec4899"}].map(v=>(
+                <div key={v.label} className="rounded-xl overflow-hidden border border-slate-200 bg-white shadow-sm">
+                  <div className="px-3 py-1.5 flex items-center justify-between" style={{background:"#0f172a"}}>
+                    <span className="text-white text-xs font-semibold">Video {v.label}</span>
+                    <span className="text-white text-xs px-2 py-0.5 rounded-full" style={{background:v.tc}}>{v.tag}</span>
                   </div>
-                  <AnimatePresence mode="wait">
-                    <motion.p
-                      key={stepIndex}
-                      initial={{ opacity: 0, y: 4 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -4 }}
-                      transition={{ duration: 0.3 }}
-                      className="text-center text-sm text-indigo-500 font-medium"
-                    >
-                      {LOADING_STEPS[stepIndex]}
-                    </motion.p>
-                  </AnimatePresence>
-                </motion.div>
-              ) : (
-                <motion.div key="button" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                  <Button
-                    className="w-full rounded-xl font-semibold text-white"
-                    style={{ background: "#6366f1" }}
-                    onClick={handleSubmit}
-                  >
-                    Analyze Videos →
-                  </Button>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </CardContent>
-        </Card>
+                  <div className="p-3">
+                    <div className="h-16 rounded-lg bg-slate-100 flex items-center justify-center mb-2">
+                      <FaYoutube size={16} className="text-slate-400"/>
+                    </div>
+                    <div className="h-2 bg-slate-200 rounded w-3/4 mb-1"/><div className="h-1.5 bg-slate-100 rounded w-1/2 mb-2"/>
+                    <div className="flex gap-1">
+                      {["👁 22K","❤️ 1.4K","💬 52"].map(s=><span key={s} className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">{s}</span>)}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+              <div className="flex justify-end mb-2">
+                <div className="px-3 py-1.5 rounded-xl text-xs text-white" style={{background:"#0f172a"}}>Which video has better engagement?</div>
+              </div>
+              <div className="px-3 py-2 rounded-xl border border-slate-200 text-xs text-slate-600 leading-relaxed">
+                Video B has <span className="font-semibold text-green-600">8.81%</span> engagement vs Video A&apos;s <span className="font-semibold text-yellow-600">6.30%</span> <span className="text-slate-500 font-medium">[Video B, metadata]</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </motion.div>
+    </section>
+  );
+}
+
+// ── Trusted By ─────────────────────────────────────────────────────────────────
+
+function TrustedBy() {
+  const base = ["YouTube", "Instagram", "Qdrant", "Cohere", "Groq", "LangGraph", "Apify", "Whisper"];
+  // Triplicate so there's always content visible during the loop
+  const brands = [...base, ...base, ...base];
+  return (
+    <section className="py-10 border-t border-slate-100 overflow-hidden">
+      <p className="text-center text-xs text-slate-400 font-medium tracking-widest uppercase mb-6">Powered by</p>
+      <div className="relative">
+        <div className="absolute left-0 top-0 bottom-0 w-20 z-10 pointer-events-none" style={{ background: "linear-gradient(to right, white, transparent)" }} />
+        <div className="absolute right-0 top-0 bottom-0 w-20 z-10 pointer-events-none" style={{ background: "linear-gradient(to left, white, transparent)" }} />
+
+        <motion.div
+          className="flex items-center gap-16 whitespace-nowrap w-max"
+          animate={{ x: ["-33.33%", "0%"] }}
+          transition={{ duration: 18, repeat: Infinity, ease: "linear", repeatType: "loop" }}
+        >
+          {brands.map((b, i) => (
+            <span key={i} className="text-slate-400 font-semibold text-sm shrink-0">{b}</span>
+          ))}
+        </motion.div>
+      </div>
+    </section>
+  );
+}
+
+// ── Features ───────────────────────────────────────────────────────────────────
+
+const FEATURES = [
+  { icon: "📊", title: "Engagement Intelligence", desc: "Compare engagement rates across platforms. Understand what drives views, likes, and comments." },
+  { icon: "🎯", title: "RAG-Powered Chat", desc: "Ask questions about your video content. Get answers grounded in the actual transcript using retrieval-augmented generation." },
+  { icon: "⚡", title: "Multi-Platform Support", desc: "Works with YouTube videos and Instagram Reels. Automatic transcript extraction and Whisper-powered audio transcription." },
+  { icon: "🔍", title: "Semantic Search", desc: "Find the exact moment or topic in any video using vector similarity search powered by Qdrant." },
+  { icon: "📈", title: "Side-by-Side Comparison", desc: "Compare two videos head-to-head. See which performed better and why, with AI-generated insights." },
+  { icon: "🤖", title: "Streaming AI Responses", desc: "Get real-time answers as the AI generates them. Inline citations show exactly which part of the video each insight came from." },
+];
+
+function TiltCard({ children, className }: { children: React.ReactNode; className?: string }) {
+  const x = useMotionValue(0);
+  const y = useMotionValue(0);
+  const rotateX = useSpring(useTransform(y, [-0.5, 0.5], [8, -8]), { stiffness: 300, damping: 30 });
+  const rotateY = useSpring(useTransform(x, [-0.5, 0.5], [-8, 8]), { stiffness: 300, damping: 30 });
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    x.set((e.clientX - rect.left) / rect.width - 0.5);
+    y.set((e.clientY - rect.top) / rect.height - 0.5);
+  };
+
+  const handleMouseLeave = () => { x.set(0); y.set(0); };
+
+  return (
+    <div style={{ perspective: 800 }} onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}>
+      <motion.div style={{ rotateX, rotateY, transformStyle: "preserve-3d" }} className={className}>
+        {children}
       </motion.div>
     </div>
   );
 }
 
-// ── Video Card ─────────────────────────────────────────────────────────────────
-
-function VideoCardSkeleton({ label, color }: { label: string; color: string }) {
+function Features() {
   return (
-    <Card className="rounded-2xl shadow-sm overflow-hidden border border-slate-200">
-      <div className="h-2 w-full" style={{ background: color }} />
-      <CardContent className="p-4 flex flex-col gap-3">
-        <Skeleton className="h-36 w-full rounded-xl" />
-        <Skeleton className="h-4 w-3/4" />
-        <Skeleton className="h-3 w-1/2" />
-        <div className="flex gap-2">
-          <Skeleton className="h-6 w-16 rounded-full" />
-          <Skeleton className="h-6 w-16 rounded-full" />
-          <Skeleton className="h-6 w-16 rounded-full" />
-        </div>
-        <Skeleton className="h-5 w-24 rounded-full" />
-      </CardContent>
-    </Card>
+    <section id="features" className="px-6 lg:px-16 py-20">
+      <FadeIn className="text-center mb-14">
+        <h2 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-slate-900 mb-3" style={{ fontFamily: "var(--font-syne)" }}>
+          Everything you need to analyze<br className="hidden sm:block" /> video performance
+        </h2>
+        <p className="text-slate-500">Built for creators who care about data.</p>
+      </FadeIn>
+
+      <motion.div initial="hidden" whileInView="visible" viewport={{ once: true, margin: "-60px" }} variants={stagger}
+        className="max-w-5xl mx-auto grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {FEATURES.map((f, i) => (
+          <motion.div
+            key={f.title}
+            variants={{
+              hidden: { opacity: 0, scale: 0.85, y: 20 },
+              visible: { opacity: 1, scale: 1, y: 0, transition: { duration: 0.5, ease: [0.22, 1, 0.36, 1], delay: i * 0.08 } },
+            }}
+          >
+            <TiltCard className="p-6 rounded-2xl border border-slate-200 bg-white hover:shadow-xl hover:border-slate-300 cursor-default h-full transition-shadow duration-300">
+              <div className="text-2xl mb-4">{f.icon}</div>
+              <h3 className="text-base font-semibold text-slate-900 mb-2" style={{ fontFamily: "var(--font-syne)" }}>{f.title}</h3>
+              <p className="text-sm text-slate-500 leading-relaxed">{f.desc}</p>
+            </TiltCard>
+          </motion.div>
+        ))}
+      </motion.div>
+    </section>
   );
 }
 
-function VideoCard({
-  label,
-  meta,
-  platform,
-}: {
-  label: string;
-  meta: VideoMeta;
-  platform: "youtube" | "instagram";
-}) {
-  const accentColor = label === "A" ? "#6366f1" : "#a855f7";
-  const platformBadgeColor = platform === "youtube" ? "#ef4444" : "#ec4899";
+// ── How It Works ───────────────────────────────────────────────────────────────
 
-  const thumbnailUrl =
-    platform === "youtube"
-      ? `https://img.youtube.com/vi/${meta.video_id}/hqdefault.jpg`
-      : null;
-
-  return (
-    <Card className="rounded-2xl shadow-sm overflow-hidden border border-slate-200">
-      <div
-        className="px-4 py-2 flex items-center justify-between"
-        style={{ background: accentColor }}
-      >
-        <span className="text-white font-semibold text-sm">Video {label}</span>
-        <span
-          className="text-white text-xs font-medium px-2 py-0.5 rounded-full"
-          style={{ background: platformBadgeColor }}
-        >
-          {platform === "youtube" ? "YouTube" : "Camera"}
-        </span>
-      </div>
-
-      <CardContent className="p-4 flex flex-col gap-3">
-        {thumbnailUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={thumbnailUrl}
-            alt={meta.title}
-            className="w-full h-36 object-cover rounded-xl bg-slate-100"
-          />
-        ) : (
-          <div className="w-full h-36 rounded-xl bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center">
-            <Camera size={32} className="text-slate-400" />
-          </div>
-        )}
-
-        <p className="text-sm font-semibold text-slate-800 line-clamp-2 leading-snug">
-          {meta.title || "Untitled"}
-        </p>
-
-        <div>
-          <p className="text-sm font-bold text-slate-900">{meta.creator}</p>
-          <p className="text-xs text-slate-400">
-            @{meta.creator.toLowerCase().replace(/\s/g, "")}
-          </p>
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 text-xs">
-            <Eye size={11} /> {formatNumber(meta.views)}
-          </span>
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 text-xs">
-            <Heart size={11} />
-            {meta.likes_hidden ? "Hidden" : formatNumber(meta.likes)}
-          </span>
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 text-xs">
-            <MessageCircle size={11} /> {formatNumber(meta.comments)}
-          </span>
-        </div>
-
-        <EngagementBadge rate={meta.engagement_rate} />
-
-        <div className="flex items-center gap-3 text-xs text-slate-400 mt-1">
-          <span className="flex items-center gap-1">
-            <Calendar size={11} /> {formatDate(meta.upload_date)}
-          </span>
-          <span className="flex items-center gap-1">
-            <Clock size={11} /> {formatDuration(meta.duration_seconds)}
-          </span>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-// ── Chat Panel ─────────────────────────────────────────────────────────────────
-
-const SUGGESTIONS = [
-  "Why did Video A get more engagement?",
-  "Compare the hooks in the first 5 seconds",
-  "Suggest improvements for Video B",
-  "What's the engagement rate of each?",
+const STEPS = [
+  { n: "01", title: "Paste URLs", desc: "Drop a YouTube and Instagram URL into WiseAI" },
+  { n: "02", title: "AI Analysis", desc: "Transcripts extracted, chunks embedded, engagement computed" },
+  { n: "03", title: "Chat & Insights", desc: "Ask anything. Get answers with citations from the actual content" },
 ];
 
-function CitationBadge({ citation }: { citation: Citation }) {
-  const isA = citation.video_id === "A";
+function HowItWorks() {
   return (
-    <span
-      className="inline-flex items-center text-xs px-2 py-0.5 rounded-full font-medium mr-1"
-      style={{
-        background: isA ? "#ede9fe" : "#e0e7ff",
-        color: isA ? "#7c3aed" : "#4338ca",
-      }}
-    >
-      [Video {citation.video_id} · chunk {citation.chunk_index}]
-    </span>
-  );
-}
+    <section id="how-it-works" className="px-6 lg:px-16 py-20 bg-slate-50" style={{ borderTop: "1px solid #e2e8f0", borderBottom: "1px solid #e2e8f0" }}>
+      <FadeIn className="text-center mb-14">
+        <h2 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-slate-900" style={{ fontFamily: "var(--font-syne)" }}>
+          Three steps to video intelligence
+        </h2>
+      </FadeIn>
 
-function ChatPanel({
-  messages,
-  onSend,
-  streaming,
-}: {
-  messages: Message[];
-  onSend: (msg: string) => void;
-  streaming: boolean;
-}) {
-  const [input, setInput] = useState("");
-  const bottomRef = useRef<HTMLDivElement>(null);
+      <div className="max-w-4xl mx-auto relative">
+        <div className="absolute top-7 left-[16.66%] right-[16.66%] h-px hidden md:block"
+          style={{ background: "linear-gradient(to right, transparent, #334155, transparent)" }} />
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
-  const handleSend = useCallback(
-    (text?: string) => {
-      const msg = (text ?? input).trim();
-      if (!msg || streaming) return;
-      setInput("");
-      onSend(msg);
-    },
-    [input, streaming, onSend]
-  );
-
-  const handleSuggestion = (s: string) => {
-    onSend(s);
-  };
-
-  return (
-    <Card className="rounded-2xl shadow-sm border border-slate-200">
-      <CardHeader className="px-5 py-3 border-b border-slate-100 flex flex-row items-center gap-2">
-        <div
-          className="w-7 h-7 rounded-full flex items-center justify-center"
-          style={{ background: "#ede9fe" }}
-        >
-          <Bot size={14} style={{ color: "#7c3aed" }} />
-        </div>
-        <span className="font-semibold text-slate-800 text-sm">Ask WiseAI</span>
-      </CardHeader>
-
-      <ScrollArea className="h-[400px] px-4 py-3">
-        <div className="flex flex-col gap-4">
-          {messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-48 gap-2">
-              <Bot size={32} className="text-slate-300" />
-              <p className="text-sm text-slate-400">Ask anything about the two videos</p>
-            </div>
-          )}
-          {messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}
-            >
-              {msg.role === "assistant" && msg.citations && msg.citations.length > 0 && (
-                <div className="flex flex-wrap gap-1 mb-1 max-w-[85%]">
-                  {msg.citations.map((c, i) => (
-                    <CitationBadge key={i} citation={c} />
-                  ))}
-                </div>
-              )}
-              <div
-                className={`max-w-[85%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${
-                  msg.role === "user"
-                    ? "text-white rounded-tr-sm"
-                    : "bg-white border border-slate-200 text-slate-800 rounded-tl-sm shadow-sm"
-                }`}
-                style={msg.role === "user" ? { background: "#6366f1" } : undefined}
-              >
-                {msg.content}
-                {msg.streaming && (
-                  <span className="inline-block w-0.5 h-3.5 bg-indigo-400 ml-0.5 animate-pulse" />
-                )}
+        <motion.div initial="hidden" whileInView="visible" viewport={{ once: true }} variants={stagger}
+          className="grid grid-cols-1 md:grid-cols-3 gap-8 relative">
+          {STEPS.map((step) => (
+            <motion.div key={step.n} variants={fadeUp} className="flex flex-col items-center text-center">
+              <div className="w-14 h-14 rounded-full flex items-center justify-center text-white text-sm font-bold mb-5 shadow-lg relative z-10"
+                style={{ background: "#0f172a", fontFamily: "var(--font-syne)" }}>
+                {step.n}
               </div>
-            </div>
+              <h3 className="text-base font-bold text-slate-900 mb-2" style={{ fontFamily: "var(--font-syne)" }}>{step.title}</h3>
+              <p className="text-sm text-slate-500 max-w-[200px]">{step.desc}</p>
+            </motion.div>
           ))}
-          <div ref={bottomRef} />
-        </div>
-      </ScrollArea>
-
-      <Separator />
-
-      {messages.length === 0 && (
-        <div className="px-4 pt-3 flex flex-wrap gap-2">
-          {SUGGESTIONS.map((s) => (
-            <button
-              key={s}
-              onClick={() => handleSuggestion(s)}
-              disabled={streaming}
-              className="text-xs px-3 py-1.5 rounded-full border border-slate-200 text-slate-600 hover:border-indigo-300 hover:text-indigo-600 hover:bg-indigo-50 transition-colors disabled:opacity-40"
-            >
-              {s}
-            </button>
-          ))}
-        </div>
-      )}
-
-      <div className="px-4 py-3 flex items-center gap-2">
-        <Input
-          className="rounded-full border-slate-200 focus-visible:ring-indigo-400 text-sm"
-          placeholder={streaming ? "Waiting for response..." : "Ask about the videos..."}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSend()}
-          disabled={streaming}
-        />
-        <Button
-          size="icon"
-          className="rounded-full shrink-0 text-white disabled:opacity-40"
-          style={{ background: "#6366f1" }}
-          onClick={() => handleSend()}
-          disabled={streaming || !input.trim()}
-        >
-          <Send size={15} />
-        </Button>
+        </motion.div>
       </div>
-    </Card>
+    </section>
   );
 }
 
-// ── Main App ───────────────────────────────────────────────────────────────────
+// ── CTA ────────────────────────────────────────────────────────────────────────
 
-export default function Home() {
-  const [sessionId] = useState<string>(() =>
-    typeof crypto !== "undefined" ? crypto.randomUUID() : Math.random().toString(36)
-  );
-
-  const [phase, setPhase] = useState<"input" | "app">("input");
-  const [videoMeta, setVideoMeta] = useState<{ A: VideoMeta | null; B: VideoMeta | null }>({
-    A: null,
-    B: null,
-  });
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [streaming, setStreaming] = useState(false);
-
-  const handleIngest = async (urlA: string, urlB: string) => {
-    const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingest`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ video_a_url: urlA, video_b_url: urlB }),
-    });
-
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.detail || "Ingest failed");
-    }
-
-    const data = await res.json();
-    setVideoMeta({ A: data.video_A, B: data.video_B });
-    setPhase("app");
-  };
-
-  const handleSend = async (text: string) => {
-    const userMsg: Message = { id: crypto.randomUUID(), role: "user", content: text };
-    const assistantId = crypto.randomUUID();
-    const assistantMsg: Message = {
-      id: assistantId, role: "assistant", content: "", citations: [], streaming: true,
-    };
-
-    setMessages((prev) => [...prev, userMsg, assistantMsg]);
-    setStreaming(true);
-
-    const metaPayload: Record<string, object> = {};
-    if (videoMeta.A) metaPayload["A"] = videoMeta.A;
-    if (videoMeta.B) metaPayload["B"] = videoMeta.B;
-
-    try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, message: text, video_metadata: metaPayload }),
-      });
-
-      if (!res.body) throw new Error("No response body");
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() ?? "";
-
-        for (const part of parts) {
-          const lines = part.split("\n");
-          const eventLine = lines.find((l) => l.startsWith("event:"));
-          const dataLine = lines.find((l) => l.startsWith("data:"));
-          if (!eventLine || !dataLine) continue;
-
-          const event = eventLine.replace("event:", "").trim();
-          const rawData = dataLine.replace("data:", "").trim();
-
-          if (event === "citations") {
-            const citations: Citation[] = JSON.parse(rawData);
-            setMessages((prev) =>
-              prev.map((m) => (m.id === assistantId ? { ...m, citations } : m))
-            );
-          } else if (event === "token") {
-            const token: string = JSON.parse(rawData);
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantId ? { ...m, content: m.content + token } : m
-              )
-            );
-          } else if (event === "done") {
-            setMessages((prev) =>
-              prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m))
-            );
-            setStreaming(false);
-          }
-        }
-      }
-    } catch (e) {
-      console.error(e);
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantId
-            ? { ...m, content: "Something went wrong. Please try again.", streaming: false }
-            : m
-        )
-      );
-      setStreaming(false);
-    }
-  };
-
+function CTASection() {
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50">
+    <FadeIn>
+      <section className="px-6 lg:px-16 py-24" style={{ background: "linear-gradient(to bottom, #eef2ff, #ffffff)" }}>
+        <div className="max-w-2xl mx-auto text-center flex flex-col items-center gap-6">
+          <h2 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-slate-900" style={{ fontFamily: "var(--font-syne)" }}>
+            Ready to understand your videos?
+          </h2>
+          <p className="text-slate-500">Start analyzing in seconds. No account needed.</p>
+          <Link href="/app"
+            className="px-8 py-3.5 rounded-full text-sm font-semibold text-white hover:scale-105 transition-transform shadow-xl"
+            style={{ background: "#0f172a", boxShadow: "0 8px 30px rgba(0,0,0,0.15)" }}>
+            Analyze Videos Now →
+          </Link>
+        </div>
+      </section>
+    </FadeIn>
+  );
+}
+
+// ── Footer ─────────────────────────────────────────────────────────────────────
+
+function Footer() {
+  return (
+    <footer className="px-6 lg:px-16 py-6 flex items-center justify-center" style={{ borderTop: "1px solid #e2e8f0" }}>
+      <p className="text-sm text-slate-400">© 2026 WiseAI · Built with RAG + LangGraph</p>
+    </footer>
+  );
+}
+
+// ── Page ───────────────────────────────────────────────────────────────────────
+
+export default function LandingPage() {
+  return (
+    <div className="min-h-screen flex flex-col bg-white">
       <Navbar />
-
-      {phase === "input" && <InputScreen onIngest={handleIngest} />}
-
-      {phase === "app" && (
-        <motion.main
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.5 }}
-          className="flex-1 max-w-5xl mx-auto w-full px-4 py-6 flex flex-col gap-5"
-        >
-          <div className="grid grid-cols-2 gap-4">
-            {videoMeta.A ? (
-              <VideoCard label="A" meta={videoMeta.A} platform="youtube" />
-            ) : (
-              <VideoCardSkeleton label="A" color="#6366f1" />
-            )}
-            {videoMeta.B ? (
-              <VideoCard label="B" meta={videoMeta.B} platform="instagram" />
-            ) : (
-              <VideoCardSkeleton label="B" color="#a855f7" />
-            )}
-          </div>
-
-          <ChatPanel messages={messages} onSend={handleSend} streaming={streaming} />
-        </motion.main>
-      )}
+      <Hero />
+      <TrustedBy />
+      <Features />
+      <HowItWorks />
+      <CTASection />
+      <Footer />
     </div>
   );
 }

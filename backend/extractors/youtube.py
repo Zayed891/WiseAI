@@ -10,6 +10,7 @@ class VideoData(BaseModel):
     title: str
     creator: str
     transcript: str
+    transcript_segments: list[dict] = []  # [{text, start, duration}] for time-aware chunking
     views: int
     likes: int
     comments: int
@@ -32,10 +33,15 @@ def fetch_video_data(url: str) -> VideoData:
         ytt = YouTubeTranscriptApi()
         transcript_list = ytt.fetch(video_id)
         transcript = " ".join(entry.text for entry in transcript_list)
+        transcript_segments = [
+            {"text": entry.text, "start": round(entry.start, 2), "duration": round(entry.duration, 2)}
+            for entry in transcript_list
+        ]
     except TranscriptsDisabled:
         raise ValueError(f"Transcripts are disabled for video: {video_id}")
     except NoTranscriptFound:
         raise ValueError(f"No transcript found for video: {video_id}")
+    transcript_segments = locals().get("transcript_segments", [])
 
     ydl_opts = {
         "quiet": True,
@@ -69,6 +75,7 @@ def fetch_video_data(url: str) -> VideoData:
         title=info.get("title", ""),
         creator=info.get("uploader", ""),
         transcript=transcript,
+        transcript_segments=transcript_segments,
         views=info.get("view_count") or 0,
         likes=info.get("like_count") or 0,
         comments=info.get("comment_count") or 0,

@@ -17,7 +17,7 @@ def transcribe_from_url(video_url: str) -> str:
     # Download video into a temp file
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
         tmp_path = tmp.name
-        with httpx.stream("GET", video_url, follow_redirects=True, timeout=60) as r:
+        with httpx.stream("GET", video_url, follow_redirects=True, timeout=httpx.Timeout(connect=10, read=120, write=60, pool=10)) as r:
             if r.status_code != 200:
                 raise ValueError(f"Failed to download video: HTTP {r.status_code}")
             for chunk in r.iter_bytes(chunk_size=8192):
