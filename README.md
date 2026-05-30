@@ -12,8 +12,7 @@ Answers come with citations so you know exactly which part of which video the AI
 
 **Backend**
 - FastAPI
-- yt-dlp + youtube-transcript-api (YouTube metadata + transcripts)
-- Apify instagram-scraper (Instagram Reels)
+- Apify (YouTube metadata + transcript, Instagram Reels)
 - Groq Whisper (audio transcription for Reels)
 - Cohere embeddings
 - Qdrant (vector store)
