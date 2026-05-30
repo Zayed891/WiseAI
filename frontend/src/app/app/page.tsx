@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Bot, Send, Eye, Heart, MessageCircle, Clock, Calendar, Zap,
+  Bot, Send, Eye, Heart, MessageCircle, Clock, Calendar, Zap, Loader2, Check, Download, FileText, Layers, Sparkles,
 } from "lucide-react";
 import { FaYoutube, FaInstagram } from "react-icons/fa";
 import Link from "next/link";
@@ -100,7 +100,12 @@ function Navbar() {
 
 // ── URL Input Screen ───────────────────────────────────────────────────────────
 
-const LOADING_STEPS = ["Extracting transcripts...", "Embedding chunks...", "Ready to chat ✓"];
+const LOADING_STEPS = [
+  { icon: Download, label: "Fetching video data" },
+  { icon: FileText, label: "Extracting transcripts" },
+  { icon: Layers, label: "Embedding & indexing chunks" },
+  { icon: Sparkles, label: "Preparing your AI chat" },
+];
 
 function InputScreen({ onIngest }: { onIngest: (a: string, b: string) => void }) {
   const [urlA, setUrlA] = useState("");
@@ -114,7 +119,7 @@ function InputScreen({ onIngest }: { onIngest: (a: string, b: string) => void })
     setError("");
     setLoading(true);
     setStepIndex(0);
-    const stepTimer = setInterval(() => setStepIndex((p) => Math.min(p + 1, LOADING_STEPS.length - 1)), 3000);
+    const stepTimer = setInterval(() => setStepIndex((p) => Math.min(p + 1, LOADING_STEPS.length - 1)), 4000);
     try { await onIngest(urlA.trim(), urlB.trim()); }
     finally { clearInterval(stepTimer); setLoading(false); }
   };
@@ -164,17 +169,59 @@ function InputScreen({ onIngest }: { onIngest: (a: string, b: string) => void })
             <AnimatePresence mode="wait">
               {loading ? (
                 <motion.div key="loading" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex flex-col gap-3">
-                  <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                  {/* Progress bar */}
+                  <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
                     <motion.div className="h-full rounded-full bg-slate-900"
-                      initial={{ width: "5%" }} animate={{ width: `${((stepIndex + 1) / LOADING_STEPS.length) * 100}%` }}
+                      initial={{ width: "8%" }} animate={{ width: `${((stepIndex + 1) / LOADING_STEPS.length) * 100}%` }}
                       transition={{ duration: 0.6, ease: "easeInOut" }} />
                   </div>
-                  <AnimatePresence mode="wait">
-                    <motion.p key={stepIndex} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }}
-                      transition={{ duration: 0.3 }} className="text-center text-sm text-indigo-500 font-semibold">
-                      {LOADING_STEPS[stepIndex]}
-                    </motion.p>
-                  </AnimatePresence>
+
+                  {/* Step checklist */}
+                  <div className="flex flex-col gap-2.5 mt-1">
+                    {LOADING_STEPS.map((step, i) => {
+                      const StepIcon = step.icon;
+                      const done = i < stepIndex;
+                      const active = i === stepIndex;
+                      return (
+                        <motion.div
+                          key={step.label}
+                          initial={{ opacity: 0, x: -8 }}
+                          animate={{ opacity: done || active ? 1 : 0.4, x: 0 }}
+                          transition={{ duration: 0.3, delay: i * 0.05 }}
+                          className="flex items-center gap-3"
+                        >
+                          <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
+                            done ? "bg-green-100" : active ? "bg-slate-900" : "bg-slate-100"
+                          }`}>
+                            {done ? (
+                              <Check size={14} className="text-green-600" />
+                            ) : active ? (
+                              <Loader2 size={14} className="text-white animate-spin" />
+                            ) : (
+                              <StepIcon size={13} className="text-slate-400" />
+                            )}
+                          </div>
+                          <span className={`text-sm transition-colors ${
+                            done ? "text-slate-400 line-through" : active ? "text-slate-900 font-semibold" : "text-slate-400"
+                          }`}>
+                            {step.label}
+                          </span>
+                          {active && (
+                            <motion.span
+                              className="ml-auto flex gap-0.5"
+                              initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+                            >
+                              {[0, 1, 2].map((d) => (
+                                <motion.span key={d} className="w-1 h-1 rounded-full bg-slate-400"
+                                  animate={{ opacity: [0.3, 1, 0.3] }}
+                                  transition={{ duration: 1, repeat: Infinity, delay: d * 0.2 }} />
+                              ))}
+                            </motion.span>
+                          )}
+                        </motion.div>
+                      );
+                    })}
+                  </div>
                 </motion.div>
               ) : (
                 <motion.div key="button" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
@@ -186,7 +233,7 @@ function InputScreen({ onIngest }: { onIngest: (a: string, b: string) => void })
               )}
             </AnimatePresence>
 
-            <p className="text-center text-xs text-slate-400">No signup required · Free to try</p>
+            {!loading && <p className="text-center text-xs text-slate-400">No signup required · Free to try</p>}
           </CardContent>
         </Card>
       </motion.div>
