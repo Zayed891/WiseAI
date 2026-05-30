@@ -45,14 +45,10 @@ def _parse_json3_transcript(data: dict) -> tuple[str, list[dict]]:
 
 def _fetch_transcript_via_ytdlp(info: dict, proxy_url: str | None) -> tuple[str, list[dict]]:
     """
-    Extract transcript from yt-dlp info dict by fetching the json3 subtitle URL.
-    Uses yt-dlp's own downloader to respect proxy settings.
+    Extract transcript by fetching the json3 subtitle URL directly via httpx.
+    Caption CDN URLs (timedtext) are not IP-blocked, so no proxy needed.
     Tries automatic captions first, then manual subtitles.
     """
-    ydl_opts = {"quiet": True}
-    if proxy_url:
-        ydl_opts["proxy"] = proxy_url
-
     for caption_key in ["automatic_captions", "subtitles"]:
         captions = info.get(caption_key, {})
         for lang in ["en", "en-US", "en-GB"]:
@@ -61,9 +57,9 @@ def _fetch_transcript_via_ytdlp(info: dict, proxy_url: str | None) -> tuple[str,
             for cap in captions[lang]:
                 if cap.get("ext") == "json3":
                     try:
-                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                            data = ydl.urlopen(cap["url"]).read()
-                            return _parse_json3_transcript(json.loads(data))
+                        resp = httpx.get(cap["url"], timeout=30, follow_redirects=True)
+                        if resp.status_code == 200:
+                            return _parse_json3_transcript(resp.json())
                     except Exception:
                         continue
 
@@ -78,6 +74,7 @@ def fetch_video_data(url: str) -> VideoData:
         "quiet": True,
         "skip_download": True,
         "extract_flat": False,
+        "ignore_no_formats_error": True,
     }
     if proxy_url:
         ydl_opts["proxy"] = proxy_url
