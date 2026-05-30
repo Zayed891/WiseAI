@@ -1,4 +1,3 @@
-import os
 import json
 import httpx
 from pydantic import BaseModel
@@ -43,7 +42,7 @@ def _parse_json3_transcript(data: dict) -> tuple[str, list[dict]]:
     return " ".join(texts), segments
 
 
-def _fetch_transcript_via_ytdlp(info: dict, proxy_url: str | None) -> tuple[str, list[dict]]:
+def _fetch_transcript_via_ytdlp(info: dict) -> tuple[str, list[dict]]:
     """
     Extract transcript by fetching the json3 subtitle URL directly via httpx.
     Caption CDN URLs (timedtext) are not IP-blocked, so no proxy needed.
@@ -68,16 +67,15 @@ def _fetch_transcript_via_ytdlp(info: dict, proxy_url: str | None) -> tuple[str,
 
 def fetch_video_data(url: str) -> VideoData:
     video_id = _extract_video_id(url)
-    proxy_url = os.environ.get("WEBSHARE_PROXY_URL")
 
     ydl_opts = {
         "quiet": True,
         "skip_download": True,
         "extract_flat": False,
         "ignore_no_formats_error": True,
+        # No proxy — yt-dlp handles YouTube differently from transcript API
+        # and Webshare free proxies don't support HTTPS CONNECT tunneling
     }
-    if proxy_url:
-        ydl_opts["proxy"] = proxy_url
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -99,7 +97,7 @@ def fetch_video_data(url: str) -> VideoData:
 
     # Fetch transcript via yt-dlp caption URLs (avoids youtube-transcript-api IP blocks)
     try:
-        transcript, transcript_segments = _fetch_transcript_via_ytdlp(info, proxy_url)
+        transcript, transcript_segments = _fetch_transcript_via_ytdlp(info)
     except Exception as e:
         raise ValueError(f"Could not retrieve transcript: {e}")
 
