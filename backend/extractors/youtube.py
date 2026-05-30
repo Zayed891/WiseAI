@@ -1,7 +1,7 @@
 import os
+import json
+import httpx
 from pydantic import BaseModel
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
-from youtube_transcript_api.proxies import WebshareProxyConfig
 import yt_dlp
 import re
 
@@ -12,7 +12,7 @@ class VideoData(BaseModel):
     title: str
     creator: str
     transcript: str
-    transcript_segments: list[dict] = []  # [{text, start, duration}] for time-aware chunking
+    transcript_segments: list[dict] = []
     views: int
     likes: int
     comments: int
@@ -28,48 +28,57 @@ def _extract_video_id(url: str) -> str:
     return match.group(1)
 
 
-def _get_proxy_config():
+def _parse_json3_transcript(data: dict) -> tuple[str, list[dict]]:
+    """Parse YouTube's json3 subtitle format into transcript text and segments."""
+    segments = []
+    texts = []
+    for event in data.get("events", []):
+        segs = event.get("segs", [])
+        text = "".join(s.get("utf8", "") for s in segs).strip()
+        if text and text != "\n":
+            start = round(event.get("tStartMs", 0) / 1000, 2)
+            duration = round(event.get("dDurationMs", 0) / 1000, 2)
+            segments.append({"text": text, "start": start, "duration": duration})
+            texts.append(text)
+    return " ".join(texts), segments
+
+
+def _fetch_transcript_via_ytdlp(info: dict, proxy_url: str | None) -> tuple[str, list[dict]]:
     """
-    Returns a WebshareProxyConfig if WEBSHARE_PROXY_USERNAME and WEBSHARE_PROXY_PASSWORD are set.
-    Falls back to raw WEBSHARE_PROXY_URL for yt-dlp only.
+    Extract transcript from yt-dlp info dict by fetching the json3 subtitle URL.
+    Uses yt-dlp's own downloader to respect proxy settings.
+    Tries automatic captions first, then manual subtitles.
     """
-    username = os.environ.get("WEBSHARE_PROXY_USERNAME")
-    password = os.environ.get("WEBSHARE_PROXY_PASSWORD")
-    if username and password:
-        return WebshareProxyConfig(proxy_username=username, proxy_password=password)
-    return None
+    ydl_opts = {"quiet": True}
+    if proxy_url:
+        ydl_opts["proxy"] = proxy_url
+
+    for caption_key in ["automatic_captions", "subtitles"]:
+        captions = info.get(caption_key, {})
+        for lang in ["en", "en-US", "en-GB"]:
+            if lang not in captions:
+                continue
+            for cap in captions[lang]:
+                if cap.get("ext") == "json3":
+                    try:
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            data = ydl.urlopen(cap["url"]).read()
+                            return _parse_json3_transcript(json.loads(data))
+                    except Exception:
+                        continue
+
+    raise ValueError("No English transcript found via yt-dlp")
 
 
 def fetch_video_data(url: str) -> VideoData:
     video_id = _extract_video_id(url)
-    proxy_config = _get_proxy_config()
     proxy_url = os.environ.get("WEBSHARE_PROXY_URL")
-
-    try:
-        if proxy_config:
-            ytt = YouTubeTranscriptApi(proxy_config=proxy_config)
-        else:
-            ytt = YouTubeTranscriptApi()
-
-        transcript_list = ytt.fetch(video_id)
-        transcript = " ".join(entry.text for entry in transcript_list)
-        transcript_segments = [
-            {"text": entry.text, "start": round(entry.start, 2), "duration": round(entry.duration, 2)}
-            for entry in transcript_list
-        ]
-    except TranscriptsDisabled:
-        raise ValueError(f"Transcripts are disabled for video: {video_id}")
-    except NoTranscriptFound:
-        raise ValueError(f"No transcript found for video: {video_id}")
-
-    transcript_segments = locals().get("transcript_segments", [])
 
     ydl_opts = {
         "quiet": True,
         "skip_download": True,
         "extract_flat": False,
     }
-
     if proxy_url:
         ydl_opts["proxy"] = proxy_url
 
@@ -90,6 +99,12 @@ def fetch_video_data(url: str) -> VideoData:
         if "age" in error_msg or "age-restricted" in error_msg:
             raise ValueError(f"Video is age-restricted and cannot be accessed: {video_id}")
         raise ValueError(f"Failed to download video metadata: {e}")
+
+    # Fetch transcript via yt-dlp caption URLs (avoids youtube-transcript-api IP blocks)
+    try:
+        transcript, transcript_segments = _fetch_transcript_via_ytdlp(info, proxy_url)
+    except Exception as e:
+        raise ValueError(f"Could not retrieve transcript: {e}")
 
     hashtags = [tag for tag in (info.get("tags") or []) if tag.startswith("#")]
 
