@@ -1,11 +1,8 @@
 import os
-import base64
-import tempfile
-import binascii
+import time
+import re
 import httpx
 from pydantic import BaseModel
-import yt_dlp
-import re
 
 
 class VideoData(BaseModel):
@@ -21,136 +18,134 @@ class VideoData(BaseModel):
     hashtags: list[str]
     upload_date: str
     duration_seconds: int
+    follower_count: int = 0  # subscriber count for YouTube
+    thumbnail_url: str = ""
+
+
+APIFY_BASE = "https://api.apify.com/v2"
+METADATA_ACTOR = "streamers~youtube-scraper"
+TRANSCRIPT_ACTOR = "faVsWy9VTSNVIhWpR"
 
 
 def _extract_video_id(url: str) -> str:
-    match = re.search(r"(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})", url)
+    match = re.search(r"(?:v=|youtu\.be/|shorts/)([a-zA-Z0-9_-]{11})", url)
     if not match:
         raise ValueError(f"Could not extract video ID from URL: {url}")
     return match.group(1)
 
 
-def _write_cookies_file() -> str | None:
-    """
-    Writes cookies to a temp file and returns its path. Returns None if unset.
-    Accepts either:
-      - YOUTUBE_COOKIES_B64: base64-encoded cookies.txt (preferred for cloud env vars)
-      - YOUTUBE_COOKIES: raw Netscape cookie text
-    """
-    cookies = None
+def _run_apify_actor(actor_id: str, run_input: dict, label: str) -> list:
+    api_token = os.environ.get("APIFY_API_TOKEN")
+    if not api_token:
+        raise ValueError("APIFY_API_TOKEN environment variable is not set")
 
-    b64 = os.environ.get("YOUTUBE_COOKIES_B64")
-    if b64:
-        try:
-            cookies = base64.b64decode(b64).decode("utf-8")
-        except (binascii.Error, UnicodeDecodeError):
-            cookies = None
+    params = {"token": api_token}
 
-    if not cookies:
-        cookies = os.environ.get("YOUTUBE_COOKIES")
+    start_resp = httpx.post(
+        f"{APIFY_BASE}/acts/{actor_id}/runs",
+        params=params,
+        json=run_input,
+        timeout=30,
+    )
+    if start_resp.status_code not in (200, 201):
+        raise ValueError(f"Failed to start {label} actor: {start_resp.status_code} {start_resp.text}")
 
-    if not cookies:
-        return None
+    run_id = start_resp.json()["data"]["id"]
+    print(f"[youtube] {label} run started: {run_id}")
 
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False)
-    tmp.write(cookies)
-    tmp.close()
-    return tmp.name
+    for _ in range(36):  # up to 180s
+        time.sleep(5)
+        status = httpx.get(
+            f"{APIFY_BASE}/actor-runs/{run_id}", params=params, timeout=15
+        ).json()["data"]["status"]
+        if status == "SUCCEEDED":
+            break
+        if status in ("FAILED", "ABORTED", "TIMED-OUT"):
+            raise ValueError(f"{label} actor run {status}: {run_id}")
+    else:
+        raise ValueError(f"{label} actor timed out: {run_id}")
 
-
-def _parse_json3_transcript(data: dict) -> tuple[str, list[dict]]:
-    """Parse YouTube's json3 subtitle format into transcript text and segments."""
-    segments = []
-    texts = []
-    for event in data.get("events", []):
-        segs = event.get("segs", [])
-        text = "".join(s.get("utf8", "") for s in segs).strip()
-        if text and text != "\n":
-            start = round(event.get("tStartMs", 0) / 1000, 2)
-            duration = round(event.get("dDurationMs", 0) / 1000, 2)
-            segments.append({"text": text, "start": start, "duration": duration})
-            texts.append(text)
-    return " ".join(texts), segments
+    items = httpx.get(
+        f"{APIFY_BASE}/actor-runs/{run_id}/dataset/items",
+        params={**params, "format": "json"},
+        timeout=20,
+    ).json()
+    return items
 
 
-def _fetch_transcript_via_ytdlp(info: dict) -> tuple[str, list[dict]]:
-    """
-    Extract transcript by fetching the json3 subtitle URL via httpx.
-    Caption (timedtext) URLs are signed CDN links and usually accessible.
-    Tries automatic captions first, then manual subtitles.
-    """
-    for caption_key in ["automatic_captions", "subtitles"]:
-        captions = info.get(caption_key, {})
-        for lang in ["en", "en-US", "en-GB"]:
-            if lang not in captions:
-                continue
-            for cap in captions[lang]:
-                if cap.get("ext") == "json3":
-                    try:
-                        resp = httpx.get(cap["url"], timeout=30, follow_redirects=True)
-                        if resp.status_code == 200:
-                            return _parse_json3_transcript(resp.json())
-                    except Exception:
-                        continue
-
-    raise ValueError("No English transcript found via yt-dlp")
+def _parse_duration(duration: str) -> int:
+    """Convert 'HH:MM:SS' or 'MM:SS' to seconds."""
+    if not duration:
+        return 0
+    parts = [int(p) for p in duration.split(":")]
+    if len(parts) == 3:
+        return parts[0] * 3600 + parts[1] * 60 + parts[2]
+    if len(parts) == 2:
+        return parts[0] * 60 + parts[1]
+    return parts[0] if parts else 0
 
 
 def fetch_video_data(url: str) -> VideoData:
     video_id = _extract_video_id(url)
-    cookies_file = _write_cookies_file()
 
-    ydl_opts = {
-        "quiet": True,
-        "skip_download": True,
-        "extract_flat": False,
-        "ignore_no_formats_error": True,
-    }
-    if cookies_file:
-        ydl_opts["cookiefile"] = cookies_file
+    # 1. Metadata via youtube-scraper
+    meta_items = _run_apify_actor(
+        METADATA_ACTOR,
+        {
+            "startUrls": [{"url": url}],
+            "maxResults": 1,
+            "maxResultsShorts": 0,
+            "maxResultStreams": 0,
+        },
+        "metadata",
+    )
+    if not meta_items:
+        raise ValueError(f"No metadata returned for video: {video_id}")
+    meta = meta_items[0]
 
+    # 2. Transcript via transcript scraper
+    transcript = ""
+    transcript_segments = []
     try:
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-        except yt_dlp.utils.ExtractorError as e:
-            error_msg = str(e).lower()
-            if "private" in error_msg:
-                raise ValueError(f"Video is private and cannot be accessed: {video_id}")
-            if "age" in error_msg or "age-restricted" in error_msg:
-                raise ValueError(f"Video is age-restricted and cannot be accessed: {video_id}")
-            raise ValueError(f"Failed to extract video metadata: {e}")
-        except yt_dlp.utils.DownloadError as e:
-            error_msg = str(e).lower()
-            if "private" in error_msg:
-                raise ValueError(f"Video is private and cannot be accessed: {video_id}")
-            if "age" in error_msg or "age-restricted" in error_msg:
-                raise ValueError(f"Video is age-restricted and cannot be accessed: {video_id}")
-            if "sign in" in error_msg or "bot" in error_msg:
-                raise ValueError("YouTube blocked the request (bot detection). Cookies may have expired.")
-            raise ValueError(f"Failed to download video metadata: {e}")
+        tr_items = _run_apify_actor(
+            TRANSCRIPT_ACTOR,
+            {"videoUrl": url, "targetLanguage": "en"},
+            "transcript",
+        )
+        if tr_items and tr_items[0].get("data"):
+            for seg in tr_items[0]["data"]:
+                text = seg.get("text", "").strip()
+                if not text:
+                    continue
+                transcript_segments.append({
+                    "text": text,
+                    "start": round(float(seg.get("start", 0)), 2),
+                    "duration": round(float(seg.get("dur", 0)), 2),
+                })
+            transcript = " ".join(s["text"] for s in transcript_segments)
+    except Exception as e:
+        print(f"[youtube] transcript fetch failed: {e}")
 
-        try:
-            transcript, transcript_segments = _fetch_transcript_via_ytdlp(info)
-        except Exception as e:
-            raise ValueError(f"Could not retrieve transcript: {e}")
-    finally:
-        if cookies_file and os.path.exists(cookies_file):
-            os.remove(cookies_file)
+    if not transcript:
+        raise ValueError(f"No transcript available for video: {video_id}")
 
-    hashtags = [tag for tag in (info.get("tags") or []) if tag.startswith("#")]
+    # hashtags
+    raw_tags = meta.get("hashtags") or []
+    hashtags = [t if t.startswith("#") else f"#{t}" for t in raw_tags]
 
     return VideoData(
         video_id=video_id,
         url=url,
-        title=info.get("title", ""),
-        creator=info.get("uploader", ""),
+        title=meta.get("title", ""),
+        creator=meta.get("channelName", ""),
         transcript=transcript,
         transcript_segments=transcript_segments,
-        views=info.get("view_count") or 0,
-        likes=info.get("like_count") or 0,
-        comments=info.get("comment_count") or 0,
+        views=int(meta.get("viewCount") or 0),
+        likes=int(meta.get("likes") or 0),
+        comments=int(meta.get("commentsCount") or 0),
         hashtags=hashtags,
-        upload_date=info.get("upload_date", ""),
-        duration_seconds=info.get("duration") or 0,
+        upload_date=meta.get("date", ""),
+        duration_seconds=_parse_duration(meta.get("duration", "")),
+        follower_count=int(meta.get("numberOfSubscribers") or 0),
+        thumbnail_url=meta.get("thumbnailUrl", ""),
     )

@@ -12,4 +12,3 @@ langchain-text-splitters==1.1.2
 langgraph==1.2.2
 langgraph-checkpoint==4.1.1
 langgraph-prebuilt==1.1.0
-yt-dlp==2026.3.17
