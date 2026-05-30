@@ -1,5 +1,7 @@
+import os
 from pydantic import BaseModel
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+from youtube_transcript_api.proxies import WebshareProxyConfig
 import yt_dlp
 import re
 
@@ -26,11 +28,29 @@ def _extract_video_id(url: str) -> str:
     return match.group(1)
 
 
+def _get_proxy_config():
+    """
+    Returns a WebshareProxyConfig if WEBSHARE_PROXY_USERNAME and WEBSHARE_PROXY_PASSWORD are set.
+    Falls back to raw WEBSHARE_PROXY_URL for yt-dlp only.
+    """
+    username = os.environ.get("WEBSHARE_PROXY_USERNAME")
+    password = os.environ.get("WEBSHARE_PROXY_PASSWORD")
+    if username and password:
+        return WebshareProxyConfig(proxy_username=username, proxy_password=password)
+    return None
+
+
 def fetch_video_data(url: str) -> VideoData:
     video_id = _extract_video_id(url)
+    proxy_config = _get_proxy_config()
+    proxy_url = os.environ.get("WEBSHARE_PROXY_URL")
 
     try:
-        ytt = YouTubeTranscriptApi()
+        if proxy_config:
+            ytt = YouTubeTranscriptApi(proxy_config=proxy_config)
+        else:
+            ytt = YouTubeTranscriptApi()
+
         transcript_list = ytt.fetch(video_id)
         transcript = " ".join(entry.text for entry in transcript_list)
         transcript_segments = [
@@ -41,6 +61,7 @@ def fetch_video_data(url: str) -> VideoData:
         raise ValueError(f"Transcripts are disabled for video: {video_id}")
     except NoTranscriptFound:
         raise ValueError(f"No transcript found for video: {video_id}")
+
     transcript_segments = locals().get("transcript_segments", [])
 
     ydl_opts = {
@@ -48,6 +69,9 @@ def fetch_video_data(url: str) -> VideoData:
         "skip_download": True,
         "extract_flat": False,
     }
+
+    if proxy_url:
+        ydl_opts["proxy"] = proxy_url
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
